@@ -58,7 +58,7 @@ def plot_pred(img, logits, boxes, savepath=None):
         return
     
     pred_boxes = torch.stack(pred_boxes, dim = 0)
-    pred_boxes = box_convert(boxes = pred_boxes, in_fmt = 'xywh', out_fmt = 'xyxy')
+    pred_boxes = box_convert(boxes = pred_boxes, in_fmt = 'cxcywh', out_fmt = 'xyxy')
     _, H, W = img.shape
     frac = torch.tensor([W,H,W,H])
     pred_boxes = pred_boxes * frac # scale to image size
