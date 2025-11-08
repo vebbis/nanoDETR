@@ -1,4 +1,15 @@
 nanoDETR_venv/
+img_training/
+saved_models/
 .vscode/
 data/
+.DS_Store
+*.ipynb
+*.mp4
 .ipynb_checkpoints/
+*pycache*/
+*.pth
+*.log
+*.ckpt
+*.md
+

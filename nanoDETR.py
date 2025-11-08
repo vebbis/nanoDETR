@@ -168,12 +168,13 @@ class DecoderBlock(nn.Module):
 
 
 class nanoDETR(nn.Module):
-    def __init__(self, resnet50, ntokens = 224, nlayers = 6, nhead = 8, hidden_dim = 256, nqueries = 100, num_classes = 20, batch_size = 1):
+    def __init__(self, resnet50, max_conv_img_side = 100, nlayers = 6, nhead = 8, hidden_dim = 256, nqueries = 100, num_classes = 20, batch_size = 1):
         super().__init__()
         self.batch_size = batch_size
         self.nlayers = nlayers
         self.nhead = nhead
         self.hidden_dim = hidden_dim
+        self.max_conv_img_side = max_conv_img_side
         
         # backbone
         self.resnet50 = resnet50
@@ -181,7 +182,9 @@ class nanoDETR(nn.Module):
         self.project = nn.Conv2d(in_channels = 2048, out_channels = hidden_dim, kernel_size = 1, bias=False)
         
         # build encoder
-        self.encoder_pos_encode = nn.Parameter(torch.randn(ntokens, hidden_dim)) # (nqueries, hidden_dim) -> will be broadcasted to (B, nqueries, hidden_dim)
+        # self.encoder_pos_encode = nn.Parameter(torch.randn(ntokens, hidden_dim)) # (nqueries, hidden_dim) -> will be broadcasted to (B, nqueries, hidden_dim)
+        table = utils.sinusoidal_pos_encode_2d(max_dim = max_conv_img_side, d_model = hidden_dim)
+        self.register_buffer("sinusoidal_2d_pos_encode", table, persistent=False)
         self.encoder = Encoder(num_encoder_layers = nlayers, hidden_dim = hidden_dim, nhead = nhead)
 
         # build decoder
@@ -202,25 +205,31 @@ class nanoDETR(nn.Module):
     def forward(self, x):
         # expect x to be raw img from resnet50, e.g. x.shape = (B, C, H, W) = (1, 2048, 14, 16)
         # we assume ntokens when we overfit to one img to check for bugs. It will be made general => cannot use fixed-size feat.dim embedding
-        assert x.shape == (3, 442, 500), f'image shape is {x.shape}, but should be (3, 442, 500)'
+        # assert x.shape == (3, 442, 500), f'image shape is {x.shape}, but should be (3, 442, 500)'
 
         # backbone
         with torch.no_grad():
             x = self.backbone(x.unsqueeze(0))
         x = self.project(x)
+        _, _, H, W = x.shape
+        assert max(H,W) <= self.max_conv_img_side
+
         x = x.flatten(2) # (B, hidden_dim, T)
         x = x.transpose(-2,-1) # (B, T, hidden_dim)
         x = x.contiguous() # transpose will be permanent
 
+        # create 2d positional encoding
+        encoder_pos_encode = self.sinusoidal_2d_pos_encode[:H, :W, :].flatten(0,1).unsqueeze(0) # (1, H*W, hidden_dim)
+
         # encoder
-        memory = self.encoder(x, self.encoder_pos_encode)
+        memory = self.encoder(x, encoder_pos_encode)
 
         # decoder
         queries = torch.zeros((self.batch_size, self.nqueries, self.hidden_dim), device=x.device, dtype=x.dtype)
         for layer in self.layers:
             queries = layer(x = queries, 
                             memory = memory, 
-                            memory_pos_encoding = self.encoder_pos_encode, 
+                            memory_pos_encoding = encoder_pos_encode, 
                             query_pos_encoding = self.query_pos_encoding)
 
         # prediction

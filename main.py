@@ -2,21 +2,35 @@ from nanoDETR import nanoDETR
 
 import torch
 import torchvision.models as models
-from torchvision import datasets, transforms as T
+from torchvision import datasets
 from torchvision.datasets import wrap_dataset_for_transforms_v2
-from torchvision.models import ResNet50_Weights  # <-- import this
+from torchvision.models import ResNet50_Weights  
 from torchvision.transforms import v2
-from torchvision.utils import draw_bounding_boxes
 from torchvision.ops import generalized_box_iou_loss # same loss / paper ref. as in original DETR paper
 from torchvision.ops import box_convert
-import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from scipy.optimize import linear_sum_assignment
-import math
 from torch.optim.lr_scheduler import StepLR
-import utils
 import matplotlib.pyplot as plt
+from datetime import datetime
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+import logging
+
+# Configure basic logging once, at top-level
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[             # to console
+        logging.FileHandler("training.log", mode="w")  # to file
+    ],
+)
+
+logger = logging.getLogger(__name__)
+
+
 
 
 # imagenet stats here: https://docs.pytorch.org/vision/main/models/generated/torchvision.models.resnet50.html#torchvision.models.ResNet50_Weights
@@ -89,73 +103,76 @@ def loss(l1_lambda, IoU_lambda, logits, boxes, gt_labels, gt_boxes):
 
     
 
+# --- hyperparams
+l1_lambda = 5 # loss. l1 and iou hyperparams from original detr paper
+IoU_lambda = 2
+
+nepochs = 10
+batch_size = 32
+
+
+def collate_fn(batch):
+    return batch
+
+dl = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+
 
 if __name__ == "__main__":
 
     
-
     resnet50 = models.resnet50(weights = ResNet50_Weights.IMAGENET1K_V2)
-    detr = nanoDETR(resnet50 = resnet50)    
+    #detr = nanoDETR(resnet50 = resnet50)    
+    detr = torch.load('saved_models/epoch7_20251107_153657.pth', weights_only=False)  
+    total, trainable = 0, 0
+    for n,p in detr.named_parameters():
+        total += p.numel()
+        if p.requires_grad:
+            trainable += p.numel()
+    print(f"Trainable params: {trainable}/{total}")
 
-    # predictions
-    img, target = dataset[0]
-    _, H, W = img.shape
-    frac = torch.tensor([W,H,W,H])
-    gt_boxes = target['boxes'].data / frac # 0-1 scale
-    gt_labels = target['labels']
-    
-
-    class_out, bbox_out = detr(img)
-    logits = class_out.squeeze(0)
-    boxes = bbox_out.squeeze(0)
-
-    # loss 
-    l1_lambda = 5 # l1 and iou hyperparams from original detr paper
-    IoU_lambda = 2
-    total_loss = loss(l1_lambda, IoU_lambda, logits, boxes, gt_labels, gt_boxes) 
-
-    # training loop
+    # training setup
     optimizer = torch.optim.AdamW(detr.parameters(), lr = 3e-4, weight_decay = 1e-4)
-    scheduler = StepLR(optimizer, step_size=75, gamma=0.1)  # every 5 epochs, multiply lr by 0.1
+    scheduler = StepLR(optimizer, step_size=5, gamma=0.1)  
     detr.train()
 
     total_loss_arr = []
     class_loss_arr = []
     box_loss_arr = []
-    for i in range(200):
-        optimizer.zero_grad()
-        class_out, bbox_out = detr(img)
-        logits = class_out.squeeze(0)
-        boxes = bbox_out.squeeze(0)
-        total_loss, nll_loss, box_loss = loss(l1_lambda, IoU_lambda, logits, boxes, gt_labels, gt_boxes) 
-        total_loss.backward()
-        optimizer.step()
+    for iepoch in range(8, nepochs):
+        
+        for batch in tqdm(dl, desc=f'Epoch {iepoch}', unit='batch'):
+
+            epoch_total_loss, epoch_nll_loss, epoch_box_loss = 0,0,0
+
+            for img, target in batch:    
+                _, H, W = img.shape
+                frac = torch.tensor([W,H,W,H])
+                gt_boxes = target['boxes'].data / frac # 0-1 scale
+                gt_labels = target['labels']
+        
+                class_out, bbox_out = detr(img)
+                logits = class_out.squeeze(0)
+                boxes = bbox_out.squeeze(0)
+                total_loss, nll_loss, box_loss = loss(l1_lambda, IoU_lambda, logits, boxes, gt_labels, gt_boxes) 
+                epoch_total_loss += total_loss
+                epoch_nll_loss += nll_loss
+                epoch_box_loss += box_loss
+
+            epoch_total_loss /= batch_size; epoch_nll_loss /= batch_size; epoch_box_loss /= batch_size
+            optimizer.zero_grad()
+            epoch_total_loss.backward()
+            optimizer.step()
+
+            logger.info(f"Epoch {iepoch + 1} Loss {epoch_total_loss:.3f} nll_loss {epoch_nll_loss:.3f} box_loss {epoch_box_loss:.3f}")    
+
         scheduler.step()
         
-        pred_classes = logits.argmax(dim=-1)
-        noobj_ratio = (pred_classes == 20).sum()
-
-        total_loss_arr.append(total_loss.item()); class_loss_arr.append(nll_loss); box_loss_arr.append(box_loss)
-        print(f"iteration {i:03}, total_loss: {total_loss.item():.3f}, class loss: {nll_loss:.3f}, bbox loss: {box_loss:.3f}, noobject preds: {noobj_ratio}")
+        total_loss_arr.append(epoch_total_loss.item()); class_loss_arr.append(epoch_nll_loss); box_loss_arr.append(epoch_box_loss)
+        print(f"epoch {iepoch:03}, total_loss: {epoch_total_loss.item():.3f}, class loss: {epoch_nll_loss:.3f}, bbox loss: {epoch_box_loss:.3f}")
         
-        savepath = f"img_training/iter_{i:03d}.png"
-
-        utils.plot_pred(img, logits, boxes, savepath=savepath)
+        torch.save(detr, f'saved_models/epoch{iepoch}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pth')
     
+    print("Training complete. Model saved.")
     
    
 
-    fig, axes = plt.subplots(1,2, figsize=(15,5))
-    axes[0].plot(total_loss_arr, label='total loss')
-    axes[0].plot(class_loss_arr, label='class loss')
-    axes[0].plot(box_loss_arr, label='box loss')
-    axes[0].legend()
-    axes[0].set_xlabel('Iteration')
-    axes[0].set_ylabel('Total Loss')
-
-    axes[1].plot(box_loss_arr, label='box loss')
-    axes[1].legend()
-    axes[1].set_xlabel('Iteration')
-    axes[1].set_ylabel('Box Loss')
-
-    plt.show()
