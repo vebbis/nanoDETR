@@ -14,7 +14,7 @@ from scipy.optimize import linear_sum_assignment
 from torch.optim.lr_scheduler import StepLR
 import matplotlib.pyplot as plt
 from datetime import datetime
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 import logging
@@ -107,22 +107,23 @@ def loss(l1_lambda, IoU_lambda, logits, boxes, gt_labels, gt_boxes):
 l1_lambda = 5 # loss. l1 and iou hyperparams from original detr paper
 IoU_lambda = 2
 
-nepochs = 10
-batch_size = 32
+nepochs = 200
+batch_size = 2
 
 
 def collate_fn(batch):
     return batch
 
-dl = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+small_dataset = Subset(dataset, indices=[0, 21]) # for overfitting
+dl = DataLoader(small_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
 
 
 if __name__ == "__main__":
 
     
     resnet50 = models.resnet50(weights = ResNet50_Weights.IMAGENET1K_V2)
-    #detr = nanoDETR(resnet50 = resnet50)    
-    detr = torch.load('saved_models/epoch7_20251107_153657.pth', weights_only=False)  
+    detr = nanoDETR(resnet50 = resnet50)    
+    #detr = torch.load('saved_models/epoch7_20251107_153657.pth', weights_only=False)  
     total, trainable = 0, 0
     for n,p in detr.named_parameters():
         total += p.numel()
@@ -132,15 +133,15 @@ if __name__ == "__main__":
 
     # training setup
     optimizer = torch.optim.AdamW(detr.parameters(), lr = 3e-4, weight_decay = 1e-4)
-    scheduler = StepLR(optimizer, step_size=5, gamma=0.1)  
+    scheduler = StepLR(optimizer, step_size=75, gamma=0.1)  
     detr.train()
 
     total_loss_arr = []
     class_loss_arr = []
     box_loss_arr = []
-    for iepoch in range(8, nepochs):
+    for iepoch in range(0, nepochs):
         
-        for batch in tqdm(dl, desc=f'Epoch {iepoch}', unit='batch'):
+        for batch in dl:
 
             epoch_total_loss, epoch_nll_loss, epoch_box_loss = 0,0,0
 
@@ -158,7 +159,7 @@ if __name__ == "__main__":
                 epoch_nll_loss += nll_loss
                 epoch_box_loss += box_loss
 
-            epoch_total_loss /= batch_size; epoch_nll_loss /= batch_size; epoch_box_loss /= batch_size
+            epoch_total_loss /= len(batch); epoch_nll_loss /= len(batch); epoch_box_loss /= len(batch)
             optimizer.zero_grad()
             epoch_total_loss.backward()
             optimizer.step()
@@ -170,7 +171,7 @@ if __name__ == "__main__":
         total_loss_arr.append(epoch_total_loss.item()); class_loss_arr.append(epoch_nll_loss); box_loss_arr.append(epoch_box_loss)
         print(f"epoch {iepoch:03}, total_loss: {epoch_total_loss.item():.3f}, class loss: {epoch_nll_loss:.3f}, bbox loss: {epoch_box_loss:.3f}")
         
-        torch.save(detr, f'saved_models/epoch{iepoch}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pth')
+        #torch.save(detr, f'saved_models/epoch{iepoch}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pth')
     
     print("Training complete. Model saved.")
     
