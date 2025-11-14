@@ -10,5 +10,4 @@ data/
 *.pth
 *.log
 *.ckpt
-*.md
 
