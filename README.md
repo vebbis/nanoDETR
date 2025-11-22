@@ -14,6 +14,7 @@ This repository serves as the companion code for a **full, live-coded video tuto
 The video explains the theory behind the Bipartite Matching loss, the mathematics of 2D Positional Encoding, and the construction of the full Encoder-Decoder Transformer from scratch.
 
 ➡️ **[WATCH THE FULL VIDEO HERE: https://www.youtube.com/watch?v=YEVVKlyAuQ8]**
+
 ➡️ **[ACCESS PAPER HERE: https://arxiv.org/pdf/2005.12872]**
 
 ---
